@@ -1,232 +1,202 @@
-import streamlit as st
-import math
-import pandas as pd
-import io
-from fpdf import FPDF
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog
+from datetime import datetime
+import csv
+import os
+import webbrowser
 
-# --- PAGE SETUP ---
-st.set_page_config(page_title="Solar Sizer El Salvador", page_icon="☀️", layout="centered")
+# Datos de departamentos de El Salvador (HSP promedio y distribuidora principal)
+DEPT_DATA = {
+    "San Salvador": {"sun": 5.15, "dist": "CAESS"},
+    "La Libertad": {"sun": 5.20, "dist": "DELSUR"},
+    "Santa Ana": {"sun": 5.10, "dist": "CLESA"},
+    "San Miguel": {"sun": 5.45, "dist": "EEO"},
+    "Sonsonate": {"sun": 5.25, "dist": "CLESA"},
+    "Usulután": {"sun": 5.40, "dist": "DEUSEM"},
+    "Ahuachapán": {"sun": 5.15, "dist": "CLESA"},
+    "La Paz": {"sun": 5.30, "dist": "DELSUR"},
+    "La Unión": {"sun": 5.50, "dist": "EEO"},
+    "Chalatenango": {"sun": 5.05, "dist": "CAESS"},
+    "Cuscatlán": {"sun": 5.15, "dist": "DELSUR"},
+    "Morazán": {"sun": 5.30, "dist": "EEO"},
+    "San Vicente": {"sun": 5.25, "dist": "DELSUR"},
+    "Cabañas": {"sun": 5.20, "dist": "CAESS"},
+}
 
-st.title("☀️ Sistema Solar Inteligente (El Salvador)")
-st.write("Herramienta avanzada de cotización para contratistas e ingenieros solares en El Salvador.")
+DISTRIBUTOR_PRESETS = {
+    "CAESS": {
+        "full_name": "CAESS (AES El Salvador)",
+        "paperwork_fee": 250.0,
+        "note": "Requiere solicitud en Portal Digital AES, inversores UL 1741 / IEEE 1547 y reprogramación/cambio a medidor bidireccional."
+    },
+    "DELSUR": {
+        "full_name": "DELSUR",
+        "paperwork_fee": 230.0,
+        "note": "Requiere formulario Generación Distribuida DELSUR, diagrama unifilar firmado por ingeniero SIGET e inspección de medidor bidireccional."
+    },
+    "CLESA": {
+        "full_name": "CLESA (AES El Salvador)",
+        "paperwork_fee": 250.0,
+        "note": "Cumple normativa AES El Salvador: protección anti-isla UL 1741, desconectador AC exterior visible y medidor bidireccional."
+    },
+    "EEO": {
+        "full_name": "EEO (AES El Salvador)",
+        "paperwork_fee": 250.0,
+        "note": "Normativa AES Zona Oriental: verificación de capacidad de transformador, plano unifilar y medición bidireccional."
+    },
+    "DEUSEM": {
+        "full_name": "DEUSEM (AES El Salvador)",
+        "paperwork_fee": 240.0,
+        "note": "Normativa AES El Salvador: firma de ingeniero registrado en SIGET y calibración de medidor bidireccional."
+    },
+    "BD": {
+        "full_name": "B&D Servicios Técnicos",
+        "paperwork_fee": 220.0,
+        "note": "Requiere solicitud formal de interconexión, diagrama unifilar, fichas técnicas e instalación de medidor bidireccional."
+    },
+    "EDECSA": {
+        "full_name": "EDECSA",
+        "paperwork_fee": 220.0,
+        "note": "Requiere solicitud formal de interconexión, diagrama unifilar, fichas técnicas e instalación de medidor bidireccional."
+    },
+}
 
-# --- COMPANY PROFILE / LOGO CONFIGURATION ---
-st.sidebar.header("🏢 Configuración del Contratista")
-company_name = st.sidebar.text_input("Nombre de tu Empresa", value="Solar El Salvador S.A. de C.V.")
-warranty_years_panels = st.sidebar.number_input("Garantía de Paneles (Años)", value=25)
-warranty_years_inv = st.sidebar.number_input("Garantía de Inversor (Años)", value=5)
+DEFAULT_PRICES = {
+    "panel_100": 65.0,
+    "panel_500": 145.0,
+    "panel_615": 175.0,
+    "panel_650": 190.0,
+    "inv_hybrid": 260.0,
+    "inv_ongrid": 165.0,
+    "inv_offgrid": 220.0,
+    "battery_5kwh": 1350.0,
+    "rail_bar": 32.0,
+    "roof_hook": 4.5,
+    "mid_clamp": 2.25,
+    "end_clamp": 2.25,
+    "grounding_kit": 45.0,
+    "pv_cable_m": 1.65,
+    "mc4_pair": 3.5,
+    "dc_combiner": 140.0,
+    "ac_disconnect": 95.0,
+}
 
-st.sidebar.subheader("💳 Condiciones de Pago")
-payment_terms_type = st.sidebar.selectbox(
-    "Estructura de Hitos",
-    ["60% Anticipo / 40% Contra Entrega", "50% Anticipo / 30% Instalación / 20% Pruebas", "100% Contado"]
-)
 
-# --- CUSTOMER IDENTIFICATION SECTION ---
-st.header("👤 Información del Cliente")
-col_c1, col_c2 = st.columns(2)
+class SolarCalculatorApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Calculadora Solar FV, Cotización, ROI y SIGET (El Salvador)")
+        self.root.geometry("1260x780")
+        self.root.configure(bg="#f1f5f9")
 
-with col_c1:
-    customer_name = st.text_input("Nombre Completo del Cliente", placeholder="Ej. Juan Pérez")
-    customer_email = st.text_input("Correo Electrónico", placeholder="ejemplo@correo.com")
+        self.bom_items = []
+        self.actual_array_kw = 0.0
+        self.panel_count = 0
+        self.inverter_kw = 0
+        self.wiring_title = ""
+        self.wiring_advice = ""
+        self.siget_items = []
 
-with col_c2:
-    customer_phone = st.text_input("Número de Teléfono / WhatsApp", placeholder="+503 0000-0000")
-    customer_city = st.selectbox(
-        "Municipio / Ciudad (El Salvador)", 
-        ["San Salvador", "Santa Tecla", "Antiguo Cuscatlán", "San Miguel", "Santa Ana", "Lourdes Colón", "Soyapango", "Ilopango", "Merliot", "Ahuachapán", "Sonsonate", "Usulután", "La Libertad", "Otro"]
-    )
+        self._setup_styles()
+        self._build_ui()
+        self.calculate_system()
 
-# --- TECHNICAL INPUT SECTION ---
-st.header("⚡ Parámetros Técnicos")
+    def _setup_styles(self):
+        style = ttk.Style()
+        style.theme_use("clam")
+        style.configure("TFrame", background="#f1f5f9")
+        style.configure("Card.TFrame", background="#ffffff", relief="solid", borderwidth=1)
+        style.configure("Header.TLabel", font=("Segoe UI", 15, "bold"), background="#f1f5f9", foreground="#0f172a")
+        style.configure("SubHeader.TLabel", font=("Segoe UI", 9), background="#f1f5f9", foreground="#475569")
+        style.configure("Section.TLabel", font=("Segoe UI", 11, "bold"), background="#ffffff", foreground="#2563eb")
+        style.configure("Field.TLabel", font=("Segoe UI", 9, "bold"), background="#ffffff", foreground="#1e293b")
+        style.configure("TButton", font=("Segoe UI", 9, "bold"), padding=6)
+        style.configure("Primary.TButton", background="#2563eb", foreground="#ffffff")
+        style.map("Primary.TButton", background=[("active", "#1d4ed8")])
+        style.configure("Excel.TButton", background="#15803d", foreground="#ffffff")
+        style.map("Excel.TButton", background=[("active", "#166534")])
+        style.configure("Treeview", font=("Segoe UI", 9), rowheight=26)
+        style.configure("Treeview.Heading", font=("Segoe UI", 9, "bold"), background="#e2e8f0", foreground="#0f172a")
 
-col1, col2, col3 = st.columns(3)
+    def _build_ui(self):
+        # Encabezado
+        header_frame = ttk.Frame(self.root, padding=(15, 10))
+        header_frame.pack(fill="x")
+        ttk.Label(header_frame, text="☀️ Calculadora Solar FV, Cotización y Retorno de Inversión (El Salvador)", style="Header.TLabel").pack(anchor="w")
+        ttk.Label(header_frame, text="Dimensionamiento técnico, lista de materiales (BOM), precios en USD (+13% IVA), ahorro mensual y normativa SIGET.", style="SubHeader.TLabel").pack(anchor="w")
 
-with col1:
-    kw_per_day = st.number_input(
-        "Energía Consumida (kWh / Día)", 
-        min_value=0.1, 
-        max_value=500.0, 
-        value=15.0, 
-        step=0.5
-    )
+        # Contenedor principal de 2 columnas
+        main_frame = ttk.Frame(self.root, padding=(15, 5, 15, 15))
+        main_frame.pack(fill="both", expand=True)
+        main_frame.columnconfigure(0, weight=1, minsize=380)
+        main_frame.columnconfigure(1, weight=2)
+        main_frame.rowconfigure(0, weight=1)
 
-with col2:
-    panel_wattage = st.selectbox(
-        "Capacidad del Panel (Watts)",
-        options=[100, 600, 610, 615, 650],
-        index=1
-    )
+        # ================= PANEL IZQUIERDO (ENTRADAS) =================
+        left_card = ttk.Frame(main_frame, style="Card.TFrame", padding=15)
+        left_card.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
 
-with col3:
-    sun_hours = st.number_input(
-        "Horas de Sol Pico / Día", 
-        min_value=0.50, 
-        max_value=14.00, 
-        value=4.55, 
-        step=0.01,
-        format="%.2f"
-    )
+        # Canvas con scroll para el formulario izquierdo
+        canvas = tk.Canvas(left_card, bg="#ffffff", highlightthickness=0)
+        scrollbar = ttk.Scrollbar(left_card, orient="vertical", command=canvas.yview)
+        form_frame = ttk.Frame(canvas, style="Card.TFrame")
 
-# --- SYSTEM CONFIGURATIONS ---
-with st.expander("⚙️ Configuración Avanzada del Sistema"):
-    distributor = st.selectbox("Distribuidora Eléctrica Local", ["AES (CAESS, CLESA, EEO, DEUSEM)", "DELSUR", "EDESAL", "B&D / Otros"])
-    system_type = st.radio("Tipo de Sistema", ["Inyección a Red / On-Grid (Sin Baterías)", "Off-Grid / Híbrido (Con Baterías)"])
-    battery_type = st.radio("Tipo de Batería (Si aplica)", ["Litio-Ion (80% Profundidad de Descarga)", "Plomo-Ácido / AGM (50% Profundidad de Descarga)"])
-    dod = 0.80 if "Litio" in battery_type else 0.50
-    sys_efficiency = st.slider("Eficiencia General del Sistema (%)", min_value=50, max_value=95, value=75) / 100.0
+        form_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=form_frame, anchor="nw", width=350)
+        canvas.configure(yscrollcommand=scrollbar.set)
 
-# --- CORE LOGIC CALCULATIONS ---
-wh_per_day = kw_per_day * 1000
-required_generation_wh = wh_per_day / sys_efficiency
-required_array_watts = required_generation_wh / sun_hours
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
 
-num_panels = math.ceil(required_array_watts / panel_wattage)
-actual_array_watts = num_panels * panel_wattage
+        # 1. Datos del Cliente
+        ttk.Label(form_frame, text="1. Datos del Cliente y Distribuidora", style="Section.TLabel").pack(anchor="w", pady=(0, 8))
 
-if actual_array_watts < 1000:
-    system_voltage = 12
-elif actual_array_watts < 3000:
-    system_voltage = 24
-else:
-    system_voltage = 48
+        self.var_name = tk.StringVar()
+        self.var_email = tk.StringVar()
+        self.var_phone = tk.StringVar()
+        self.var_city = tk.StringVar()
+        self.var_dept = tk.StringVar(value="San Salvador")
+        self.var_dist = tk.StringVar(value="CAESS")
 
-inverter_size_w = math.ceil((actual_array_watts * 1.25) / 500) * 500
+        self._add_entry(form_frame, "Nombre del Cliente:", self.var_name)
+        self._add_entry(form_frame, "Correo Electrónico:", self.var_email)
+        self._add_entry(form_frame, "Teléfono:", self.var_phone)
+        self._add_entry(form_frame, "Ciudad / Municipio:", self.var_city)
 
-# --- EL SALVADOR REGIONAL PRICING RULES ($ USD) ---
-panel_unit_cost = 55 if panel_wattage == 100 else 170  
-inverter_cost = 0
-inverter_qty = 1
+        ttk.Label(form_frame, text="Departamento (El Salvador):", style="Field.TLabel").pack(anchor="w", pady=(4, 2))
+        cb_dept = ttk.Combobox(form_frame, textvariable=self.var_dept, values=list(DEPT_DATA.keys()), state="readonly")
+        cb_dept.pack(fill="x", pady=(0, 6))
+        cb_dept.bind("<<ComboboxSelected>>", self.on_dept_change)
 
-if system_type == "Inyección a Red / On-Grid (Sin Baterías)":
-    if panel_wattage == 100 or num_panels < 4:
-        inverter_type = "Microinversores (AC individual)"
-        inverter_qty = num_panels
-        recommended_model = "Enphase IQ8 Series"
-        inverter_cost = 175 * inverter_qty  
-    else:
-        inverter_type = "Inversor Central de Cadena (String)"
-        recommended_model = "Fronius Primo / SMA"
-        inverter_cost = 1950 if actual_array_watts < 6000 else 2850
-else:
-    if actual_array_watts <= 1200:
-        inverter_type = f"Inversor Off-Grid Pura ({system_voltage}V)"
-        recommended_model = "Victron Energy MultiPlus"
-        inverter_cost = 690
-    elif actual_array_watts <= 3000:
-        inverter_type = f"Inversor Híbrido Todo-en-Uno ({system_voltage}V)"
-        recommended_model = "Growatt SPF"
-        inverter_cost = 850
-    else:
-        inverter_type = "Inversor Híbrido Split-Phase (48V)"
-        recommended_model = "EG4 6000XP / Deye"
-        inverter_cost = 1650 if actual_array_watts < 8000 else 4200
+        ttk.Label(form_frame, text="Distribuidora Eléctrica Local:", style="Field.TLabel").pack(anchor="w", pady=(4, 2))
+        cb_dist = ttk.Combobox(form_frame, textvariable=self.var_dist, values=list(DISTRIBUTOR_PRESETS.keys()), state="readonly")
+        cb_dist.pack(fill="x", pady=(0, 12))
+        cb_dist.bind("<<ComboboxSelected>>", lambda e: self.calculate_system())
 
-controller_amps = math.ceil((actual_array_watts / system_voltage) * 1.25)
-battery_wh = wh_per_day / dod
-battery_ah = math.ceil(battery_wh / system_voltage)
+        # 2. Parámetros Técnicos y Tarifa
+        ttk.Label(form_frame, text="2. Parámetros del Sistema y Tarifa", style="Section.TLabel").pack(anchor="w", pady=(6, 8))
 
-if system_type == "Off-Grid / Híbrido (Con Baterías)":
-    if "Litio" in battery_type:
-        total_battery_blocks = math.ceil(battery_wh / 5120)
-        battery_cost = total_battery_blocks * 1450
-    else:
-        total_battery_blocks = math.ceil(battery_wh / 1200)
-        battery_cost = total_battery_blocks * 240
-else:
-    battery_cost = 0
-    total_battery_blocks = 0
+        self.var_daily_kwh = tk.StringVar(value="30")
+        self._add_entry(form_frame, "Consumo Diario Estimado (kWh/día) [Manual]:", self.var_daily_kwh)
 
-rails_needed = math.ceil(num_panels * 1.2) 
-mid_clamps = (num_panels - 1) * 2 if num_panels > 1 else 0
-end_clamps = 4
-l_feet = math.ceil(rails_needed * 2.5)
+        # Horas Pico Solar con entrada manual + botones -1/+1
+        ttk.Label(form_frame, text="Horas Pico Solar (HSP) [Hasta 2 decimales]:", style="Field.TLabel").pack(anchor="w", pady=(4, 2))
+        hsp_row = ttk.Frame(form_frame, style="Card.TFrame")
+        hsp_row.pack(fill="x", pady=(0, 8))
+        self.var_sun_hours = tk.StringVar(value="5.15")
+        ttk.Button(hsp_row, text="-1", width=4, command=lambda: self.adjust_sun_hours(-1)).pack(side="left")
+        ttk.Entry(hsp_row, textvariable=self.var_sun_hours, justify="center").pack(side="left", fill="x", expand=True, padx=6)
+        ttk.Button(hsp_row, text="+1", width=4, command=lambda: self.adjust_sun_hours(1)).pack(side="left")
 
-racking_total_cost = (rails_needed * 50) + (mid_clamps * 6) + (end_clamps * 7) + (l_feet * 9)
-wire_connectors_cost = 210 + (num_panels * 5)  
-safety_grounding_cost = 300 if system_type == "Inyección a Red / On-Grid (Sin Baterías)" else 500 
+        ttk.Label(form_frame, text="Tipo de Panel Solar:", style="Field.TLabel").pack(anchor="w", pady=(4, 2))
+        self.var_panel_watts = tk.StringVar(value="615W")
+        cb_panel = ttk.Combobox(form_frame, textvariable=self.var_panel_watts, values=["100W", "500W", "615W", "650W"], state="readonly")
+        cb_panel.pack(fill="x", pady=(0, 6))
 
-total_panels_cost = num_panels * panel_unit_cost
-total_equipment_cost = total_panels_cost + inverter_cost + battery_cost
-total_bos_cost = racking_total_cost + wire_connectors_cost + safety_grounding_cost
-grand_total = total_equipment_cost + total_bos_cost
+        ttk.Label(form_frame, text="Tipo de Sistema:", style="Field.TLabel").pack(anchor="w", pady=(4, 2))
+        self.var_sys_type = tk.StringVar(value="Híbrido (Red + Baterías)")
+        cb_sys = ttk.Combobox(form_frame, textvariable=self.var_sys_type, values=["Híbrido (Red + Baterías)", "On-Grid (Inyección a Red)", "Off-Grid (Aislado con Baterías)"], state="readonly")
+        cb_sys.pack(fill="x", pady=(0, 6))
+        cb_sys.bind("<<ComboboxSelected>>", lambda e: self.calculate_system())
 
-# --- STAGING EXCEL AND PRINTING DATAFRAME ---
-pricing_data = [
-    {"Descripción del Material": f"Paneles Solares ({num_panels} x {panel_wattage}W)", "Cantidad": str(num_panels), "Costo Total Estimado ($ USD)": total_panels_cost},
-    {"Descripción del Material": f"Inversor Recomendado ({recommended_model})", "Cantidad": str(inverter_qty), "Costo Total Estimado ($ USD)": inverter_cost},
-]
-
-if system_type == "Off-Grid / Híbrido (Con Baterías)":
-    pricing_data.append({"Descripción del Material": f"Banco de Baterías ({battery_type})", "Cantidad": str(total_battery_blocks), "Costo Total Estimado ($ USD)": battery_cost})
-
-pricing_data.extend([
-    {"Descripción del Material": "Estructuras de Aluminio y Montaje (Rieles, Clamps, L-Feet)", "Cantidad": "Kit", "Costo Total Estimado ($ USD)": math.ceil(racking_total_cost)},
-    {"Descripción del Material": "Cableado Eléctrico Solar y Conectores (Cable PV, MC4)", "Cantidad": "Kit", "Costo Total Estimado ($ USD)": math.ceil(wire_connectors_cost)},
-    {"Descripción del Material": "Protecciones Eléctricas y Tierras (Caja Combinadora, DPS, Breakers)", "Cantidad": "Kit", "Costo Total Estimado ($ USD)": safety_grounding_cost}
-])
-
-df_materials = pd.DataFrame(pricing_data)
-
-# --- OUTPUT DISPLAY SECTION ---
-st.header("📋 Resumen del Presupuesto")
-if customer_name:
-    st.subheader(f"Propuesta Comercial: {customer_name}")
-    st.write(f"📍 **Ubicación:** {customer_city} | 📱 **Empresa Emisora:** {company_name}")
-
-st.table(df_materials)
-
-# --- FILE EXPORT ENGINES ---
-st.header("💾 Exportar Documentos de Venta")
-col_b1, col_b2 = st.columns(2)
-
-# 1. EXCEL EXPORT ENGINE (Requires 'openpyxl' to be installed)
-with col_b1:
-    buffer_excel = io.BytesIO()
-    with pd.ExcelWriter(buffer_excel, engine='openpyxl') as writer:
-        df_materials.to_excel(writer, index=False, sheet_name='Lista de Materiales')
-        
-        # Staging metadata tabs for sales tracking
-        df_meta = pd.DataFrame({
-            "Campo Remitente": ["Cliente", "Ciudad", "Teléfono", "Proyecto Total", "Términos de Pago"],
-            "Detalle Regulado": [customer_name, customer_city, customer_phone, f"${grand_total} USD", payment_terms_type]
-        })
-        df_meta.to_excel(writer, index=False, sheet_name='Detalles de Cotización')
-        
-    st.download_button(
-        label="📊 Descargar Lista en Excel (.xlsx)",
-        data=buffer_excel.getvalue(),
-        file_name=f"Materiales_Solar_{customer_name.replace(' ', '_') if customer_name else 'Cliente'}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
-
-# 2. PDF EXPORT ENGINE (With custom warranties and payment clauses)
-with col_b2:
-    def generate_pdf():
-        pdf = FPDF()
-        pdf.add_page()
-        pdf.set_auto_page_break(auto=True, margin=15)
-        
-        pdf.set_font("Helvetica", "B", 14)
-        pdf.cell(0, 8, company_name.upper(), ln=True, align="L")
-        pdf.set_font("Helvetica", "I", 9)
-        pdf.cell(0, 4, "Soluciones de Energía Renovable en El Salvador", ln=True, align="L")
-        pdf.line(10, 23, 200, 23)
-        pdf.ln(8)
-        
-        pdf.set_font("Helvetica", "B", 14)
-        pdf.cell(0, 10, "COTIZACION FORMAL DE MATERIALES", ln=True, align="C")
-        pdf.ln(4)
-        
-        pdf.set_font("Helvetica", "B", 11)
-        pdf.cell(0, 6, "1. Datos del Cliente & Ubicación", ln=True)
-        pdf.set_font("Helvetica", "", 10)
-        pdf.cell(0, 5, f"Nombre: {customer_name if customer_name else 'N/A'}", ln=True)
-        pdf.cell(0, 5, f"Destino / Ciudad: {customer_city}, El Salvador", ln=True)
-        pdf.cell(0, 5, f"Contacto: {customer_phone if customer_phone else 'N/A'} | {customer_email if customer_email else 'N/A'}", ln=True)
-        pdf.ln(4)
-        
-        pdf.set_font("Helvetica", "B", 11)
-        pdf.cell(0, 6, "2. Especificaciones Técnicas Básicas", ln=True)
-        pdf.set_font("Helvetica", "", 10)
-        pdf.cell(0, 5, f"Arreglo Diseñado: {actual_array_watts}W usando Paneles de {panel_wattage}W", ln=True)
+        ttk.Label(form_frame, text="Categoría Tarifaria (El Salvador):", style="Field.TLabel").pack(anchor="w", pady=(4, 2))
