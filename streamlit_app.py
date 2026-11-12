@@ -247,3 +247,4 @@ bom_rows.extend([
     {"Component / Material": "Roof L-Feet / Tile Hooks", "Specification": "Stainless Steel Mounting Brackets + Lag Bolts", "Qty": roof_hooks, "Unit": "pcs", "Unit Price ($)": DEFAULT_PRICES["roof_hook"]},
     {"Component / Material": "Mid Clamps", "Specification": "Aluminum Inter-panel Clamps (30-35mm)", "Qty": mid_clamps, "Unit": "pcs", "Unit Price ($)": DEFAULT_PRICES["mid_clamp"]},
     {"Component / Material": "End Clamps", "Specification": "Aluminum Edge Clamps", "Qty": end_clamps, "Unit": "pcs", "Unit Price ($)": DEFAULT_PRICES["end_clamp"]},
+])

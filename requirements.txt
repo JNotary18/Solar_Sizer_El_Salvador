@@ -2,5 +2,4 @@ streamlit
 pandas
 fpdf
 openpyxl
-tkinter
 datetime
