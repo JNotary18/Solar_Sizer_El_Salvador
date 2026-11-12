@@ -1,14 +1,17 @@
 import streamlit as st
-import math
 import pandas as pd
-import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+import math
 from datetime import datetime
-import csv
-import os
-import webbrowser
+from io import BytesIO
 
-# Datos de departamentos de El Salvador (HSP promedio y distribuidora principal)
+# Page Configuration
+st.set_page_config(
+    page_title="Solar PV Quote, ROI & SIGET Calculator (El Salvador)",
+    page_icon="☀️",
+    layout="wide"
+)
+
+# El Salvador Departments (Average Peak Sun Hours & Primary Distributor)
 DEPT_DATA = {
     "San Salvador": {"sun": 5.15, "dist": "CAESS"},
     "La Libertad": {"sun": 5.20, "dist": "DELSUR"},
@@ -30,37 +33,37 @@ DISTRIBUTOR_PRESETS = {
     "CAESS": {
         "full_name": "CAESS (AES El Salvador)",
         "paperwork_fee": 250.0,
-        "note": "Requiere solicitud en Portal Digital AES, inversores UL 1741 / IEEE 1547 y reprogramación/cambio a medidor bidireccional."
+        "note": "Requires AES Digital Portal application, UL 1741 / IEEE 1547 inverter certification, and bidirectional meter reprogramming/installation."
     },
     "DELSUR": {
         "full_name": "DELSUR",
         "paperwork_fee": 230.0,
-        "note": "Requiere formulario Generación Distribuida DELSUR, diagrama unifilar firmado por ingeniero SIGET e inspección de medidor bidireccional."
+        "note": "Requires DELSUR Generación Distribuida form, single-line diagram stamped by a SIGET-registered electrical engineer, and bidirectional meter inspection."
     },
     "CLESA": {
         "full_name": "CLESA (AES El Salvador)",
         "paperwork_fee": 250.0,
-        "note": "Cumple normativa AES El Salvador: protección anti-isla UL 1741, desconectador AC exterior visible y medidor bidireccional."
+        "note": "Follows AES El Salvador interconnection standards: UL 1741 anti-islanding compliance, accessible AC disconnect switch, and bidirectional meter setup."
     },
     "EEO": {
         "full_name": "EEO (AES El Salvador)",
         "paperwork_fee": 250.0,
-        "note": "Normativa AES Zona Oriental: verificación de capacidad de transformador, plano unifilar y medición bidireccional."
+        "note": "Follows AES El Salvador Eastern Zone standards: transformer capacity verification, single-line electrical plan, and bidirectional metering."
     },
     "DEUSEM": {
         "full_name": "DEUSEM (AES El Salvador)",
         "paperwork_fee": 240.0,
-        "note": "Normativa AES El Salvador: firma de ingeniero registrado en SIGET y calibración de medidor bidireccional."
+        "note": "Follows AES El Salvador standards: SIGET-licensed engineer sign-off and bidirectional meter calibration."
     },
     "BD": {
         "full_name": "B&D Servicios Técnicos",
         "paperwork_fee": 220.0,
-        "note": "Requiere solicitud formal de interconexión, diagrama unifilar, fichas técnicas e instalación de medidor bidireccional."
+        "note": "Requires formal interconnection request with single-line diagram, equipment datasheets, and bidirectional meter installation."
     },
     "EDECSA": {
         "full_name": "EDECSA",
         "paperwork_fee": 220.0,
-        "note": "Requiere solicitud formal de interconexión, diagrama unifilar, fichas técnicas e instalación de medidor bidireccional."
+        "note": "Requires formal interconnection request with single-line diagram, equipment datasheets, and bidirectional meter installation."
     },
 }
 
@@ -84,122 +87,163 @@ DEFAULT_PRICES = {
     "ac_disconnect": 95.0,
 }
 
+# Initialize Session State for syncing department -> sun hours & distributor
+if "selected_dept" not in st.session_state:
+    st.session_state.selected_dept = "San Salvador"
+if "sun_hours" not in st.session_state:
+    st.session_state.sun_hours = 5.15
+if "distributor" not in st.session_state:
+    st.session_state.distributor = "CAESS"
 
-class SolarCalculatorApp:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Calculadora Solar FV, Cotización, ROI y SIGET (El Salvador)")
-        self.root.geometry("1260x780")
-        self.root.configure(bg="#f1f5f9")
 
-        self.bom_items = []
-        self.actual_array_kw = 0.0
-        self.panel_count = 0
-        self.inverter_kw = 0
-        self.wiring_title = ""
-        self.wiring_advice = ""
-        self.siget_items = []
+def on_dept_change():
+    dept = st.session_state.selected_dept
+    st.session_state.sun_hours = DEPT_DATA[dept]["sun"]
+    st.session_state.distributor = DEPT_DATA[dept]["dist"]
 
-        self._setup_styles()
-        self._build_ui()
-        self.calculate_system()
 
-    def _setup_styles(self):
-        style = ttk.Style()
-        style.theme_use("clam")
-        style.configure("TFrame", background="#f1f5f9")
-        style.configure("Card.TFrame", background="#ffffff", relief="solid", borderwidth=1)
-        style.configure("Header.TLabel", font=("Segoe UI", 15, "bold"), background="#f1f5f9", foreground="#0f172a")
-        style.configure("SubHeader.TLabel", font=("Segoe UI", 9), background="#f1f5f9", foreground="#475569")
-        style.configure("Section.TLabel", font=("Segoe UI", 11, "bold"), background="#ffffff", foreground="#2563eb")
-        style.configure("Field.TLabel", font=("Segoe UI", 9, "bold"), background="#ffffff", foreground="#1e293b")
-        style.configure("TButton", font=("Segoe UI", 9, "bold"), padding=6)
-        style.configure("Primary.TButton", background="#2563eb", foreground="#ffffff")
-        style.map("Primary.TButton", background=[("active", "#1d4ed8")])
-        style.configure("Excel.TButton", background="#15803d", foreground="#ffffff")
-        style.map("Excel.TButton", background=[("active", "#166534")])
-        style.configure("Treeview", font=("Segoe UI", 9), rowheight=26)
-        style.configure("Treeview.Heading", font=("Segoe UI", 9, "bold"), background="#e2e8f0", foreground="#0f172a")
+# ================= SIDEBAR: INPUTS =================
+with st.sidebar:
+    st.header("1. Customer & Utility Info")
+    cust_name = st.text_input("Customer Name", placeholder="e.g., Carlos Martínez")
+    col_c1, col_c2 = st.columns(2)
+    with col_c1:
+        cust_email = st.text_input("Email Address", placeholder="carlos@ejemplo.sv")
+    with col_c2:
+        cust_phone = st.text_input("Phone Number", placeholder="+503 7000-0000")
 
-    def _build_ui(self):
-        # Encabezado
-        header_frame = ttk.Frame(self.root, padding=(15, 10))
-        header_frame.pack(fill="x")
-        ttk.Label(header_frame, text="☀️ Calculadora Solar FV, Cotización y Retorno de Inversión (El Salvador)", style="Header.TLabel").pack(anchor="w")
-        ttk.Label(header_frame, text="Dimensionamiento técnico, lista de materiales (BOM), precios en USD (+13% IVA), ahorro mensual y normativa SIGET.", style="SubHeader.TLabel").pack(anchor="w")
+    col_l1, col_l2 = st.columns(2)
+    with col_l1:
+        cust_city = st.text_input("City / Municipality", placeholder="e.g., Santa Tecla")
+    with col_l2:
+        cust_dept = st.selectbox(
+            "Department",
+            options=list(DEPT_DATA.keys()),
+            key="selected_dept",
+            on_change=on_dept_change
+        )
 
-        # Contenedor principal de 2 columnas
-        main_frame = ttk.Frame(self.root, padding=(15, 5, 15, 15))
-        main_frame.pack(fill="both", expand=True)
-        main_frame.columnconfigure(0, weight=1, minsize=380)
-        main_frame.columnconfigure(1, weight=2)
-        main_frame.rowconfigure(0, weight=1)
+    dist_key = st.selectbox(
+        "Local Electric Distributor",
+        options=list(DISTRIBUTOR_PRESETS.keys()),
+        format_func=lambda k: DISTRIBUTOR_PRESETS[k]["full_name"],
+        key="distributor"
+    )
+    dist_info = DISTRIBUTOR_PRESETS[dist_key]
 
-        # ================= PANEL IZQUIERDO (ENTRADAS) =================
-        left_card = ttk.Frame(main_frame, style="Card.TFrame", padding=15)
-        left_card.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+    st.divider()
+    st.header("2. System & Pricing Parameters")
 
-        # Canvas con scroll para el formulario izquierdo
-        canvas = tk.Canvas(left_card, bg="#ffffff", highlightthickness=0)
-        scrollbar = ttk.Scrollbar(left_card, orient="vertical", command=canvas.yview)
-        form_frame = ttk.Frame(canvas, style="Card.TFrame")
+    daily_kwh = st.number_input(
+        "Daily Energy Consumption (kWh/day)",
+        min_value=0.1,
+        max_value=100000.0,
+        value=30.0,
+        step=1.0,
+        format="%.2f"
+    )
 
-        form_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=form_frame, anchor="nw", width=350)
-        canvas.configure(yscrollcommand=scrollbar.set)
+    sun_hours = st.number_input(
+        "Peak Sun Hours Available (HSP)",
+        min_value=0.50,
+        max_value=24.00,
+        step=1.00,
+        format="%.2f",
+        key="sun_hours",
+        help="Use the +/- buttons to step by 1.00, or type any value up to 2 decimal places."
+    )
 
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
+    col_p1, col_p2 = st.columns(2)
+    with col_p1:
+        panel_watts = st.selectbox("Solar Panel Type", options=[100, 500, 615, 650], index=2, format_func=lambda w: f"{w}W Panel")
+    with col_p2:
+        system_type = st.selectbox("System Type", options=["Hybrid", "On-Grid", "Off-Grid"])
 
-        # 1. Datos del Cliente
-        ttk.Label(form_frame, text="1. Datos del Cliente y Distribuidora", style="Section.TLabel").pack(anchor="w", pady=(0, 8))
+    st.subheader("Tariff & Labor Settings")
+    tariff_category = st.selectbox(
+        "El Salvador Tariff Category",
+        options=["Residential (~$0.272/kWh)", "Commercial (~$0.240/kWh)", "Custom Rate ($/kWh)"]
+    )
 
-        self.var_name = tk.StringVar()
-        self.var_email = tk.StringVar()
-        self.var_phone = tk.StringVar()
-        self.var_city = tk.StringVar()
-        self.var_dept = tk.StringVar(value="San Salvador")
-        self.var_dist = tk.StringVar(value="CAESS")
+    default_rate = 0.272 if "Residential" in tariff_category else (0.240 if "Commercial" in tariff_category else 0.272)
+    kwh_rate = st.number_input(
+        "Electricity Rate ($ USD/kWh)",
+        min_value=0.01,
+        max_value=5.00,
+        value=default_rate,
+        step=0.005,
+        format="%.3f"
+    )
 
-        self._add_entry(form_frame, "Nombre del Cliente:", self.var_name)
-        self._add_entry(form_frame, "Correo Electrónico:", self.var_email)
-        self._add_entry(form_frame, "Teléfono:", self.var_phone)
-        self._add_entry(form_frame, "Ciudad / Municipio:", self.var_city)
+    labor_mode = st.selectbox(
+        "Installation Labor (% of Equipment & Materials)",
+        options=["70%", "80%", "90%", "100%", "Custom %"]
+    )
+    if labor_mode == "Custom %":
+        labor_pct = st.number_input("Enter Custom Labor %", min_value=0.0, max_value=300.0, value=75.0, step=5.0)
+    else:
+        labor_pct = float(labor_mode.replace("%", ""))
 
-        ttk.Label(form_frame, text="Departamento (El Salvador):", style="Field.TLabel").pack(anchor="w", pady=(4, 2))
-        cb_dept = ttk.Combobox(form_frame, textvariable=self.var_dept, values=list(DEPT_DATA.keys()), state="readonly")
-        cb_dept.pack(fill="x", pady=(0, 6))
-        cb_dept.bind("<<ComboboxSelected>>", self.on_dept_change)
+    default_paperwork = 0.0 if system_type == "Off-Grid" else dist_info["paperwork_fee"]
+    paperwork_cost = st.number_input(
+        "Distributor / SIGET Permitting ($ USD)",
+        min_value=0.0,
+        value=default_paperwork,
+        step=10.0,
+        format="%.2f"
+    )
 
-        ttk.Label(form_frame, text="Distribuidora Eléctrica Local:", style="Field.TLabel").pack(anchor="w", pady=(4, 2))
-        cb_dist = ttk.Combobox(form_frame, textvariable=self.var_dist, values=list(DISTRIBUTOR_PRESETS.keys()), state="readonly")
-        cb_dist.pack(fill="x", pady=(0, 12))
-        cb_dist.bind("<<ComboboxSelected>>", lambda e: self.calculate_system())
+    include_iva = st.checkbox("Include 13% IVA (El Salvador Tax)", value=True)
 
-        # 2. Parámetros Técnicos y Tarifa
-        ttk.Label(form_frame, text="2. Parámetros del Sistema y Tarifa", style="Section.TLabel").pack(anchor="w", pady=(6, 8))
 
-        self.var_daily_kwh = tk.StringVar(value="30")
-        self._add_entry(form_frame, "Consumo Diario Estimado (kWh/día) [Manual]:", self.var_daily_kwh)
+# ================= ENGINEERING CALCULATIONS =================
+efficiency_factor = 1.25 # Accounts for ~20% real-world system losses
+required_kw = (daily_kwh / sun_hours) * efficiency_factor
+panel_count = max(1, math.ceil((required_kw * 1000) / panel_watts))
+actual_array_kw = (panel_count * panel_watts) / 1000.0
+inverter_kw = max(1, math.ceil(actual_array_kw))
 
-        # Horas Pico Solar con entrada manual + botones -1/+1
-        ttk.Label(form_frame, text="Horas Pico Solar (HSP) [Hasta 2 decimales]:", style="Field.TLabel").pack(anchor="w", pady=(4, 2))
-        hsp_row = ttk.Frame(form_frame, style="Card.TFrame")
-        hsp_row.pack(fill="x", pady=(0, 8))
-        self.var_sun_hours = tk.StringVar(value="5.15")
-        ttk.Button(hsp_row, text="-1", width=4, command=lambda: self.adjust_sun_hours(-1)).pack(side="left")
-        ttk.Entry(hsp_row, textvariable=self.var_sun_hours, justify="center").pack(side="left", fill="x", expand=True, padx=6)
-        ttk.Button(hsp_row, text="+1", width=4, command=lambda: self.adjust_sun_hours(1)).pack(side="left")
+# Battery Sizing
+battery_units = 0
+if system_type in ["Hybrid", "Off-Grid"]:
+    autonomy_days = 1.5 if system_type == "Off-Grid" else 1.0
+    battery_kwh = (daily_kwh * autonomy_days) / 0.80
+    battery_units = max(1, math.ceil(battery_kwh / 5.0))
 
-        ttk.Label(form_frame, text="Tipo de Panel Solar:", style="Field.TLabel").pack(anchor="w", pady=(4, 2))
-        self.var_panel_watts = tk.StringVar(value="615W")
-        cb_panel = ttk.Combobox(form_frame, textvariable=self.var_panel_watts, values=["100W", "500W", "615W", "650W"], state="readonly")
-        cb_panel.pack(fill="x", pady=(0, 6))
+# Mounting & BOS Hardware
+panel_width_m = 0.67 if panel_watts <= 100 else 1.13
+total_rail_m = math.ceil((panel_count * panel_width_m * 2) * 1.1)
+rail_bars = max(1, math.ceil(total_rail_m / 4.2))
+mid_clamps = max(0, (panel_count - 2) * 2)
+end_clamps = 4 if panel_count == 1 else 8
+roof_hooks = max(2, math.ceil(total_rail_m / 1.2))
 
-        ttk.Label(form_frame, text="Tipo de Sistema:", style="Field.TLabel").pack(anchor="w", pady=(4, 2))
-        self.var_sys_type = tk.StringVar(value="Híbrido (Red + Baterías)")
-        cb_sys = ttk.Combobox(form_frame, textvariable=self.var_sys_type, values=["Híbrido (Red + Baterías)", "On-Grid (Inyección a Red)", "Off-Grid (Aislado con Baterías)"], state="readonly")
-        cb_sys.pack(fill="x", pady=(0, 6))
-        cb_sys.bind("<<ComboboxSelected>>", lambda e: self.calculate_system())
+max_per_string = 12 if panel_watts == 100 else 9
+strings_count = max(1, math.ceil(panel_count / max_per_string))
+pv_cable_m = strings_count * 30
+mc4_pairs = strings_count * 2
 
-        ttk.Label(form_frame, text="Categoría Tarifaria (El Salvador):", style="Field.TLabel").pack(anchor="w", pady=(4, 2))
+# Default Unit Prices
+panel_unit_price = DEFAULT_PRICES.get(f"panel_{panel_watts}", 175.0)
+inv_rate = DEFAULT_PRICES["inv_hybrid"] if system_type == "Hybrid" else (DEFAULT_PRICES["inv_ongrid"] if system_type == "On-Grid" else DEFAULT_PRICES["inv_offgrid"])
+inv_unit_price = max(450.0, inverter_kw * inv_rate)
+
+bom_rows = [
+    {"Component / Material": "Solar PV Modules", "Specification": f"{panel_watts}W Monocrystalline Panels (IEC 61215 / 61730)", "Qty": panel_count, "Unit": "pcs", "Unit Price ($)": panel_unit_price},
+    {"Component / Material": "Solar Inverter", "Specification": f"{inverter_kw}kW {system_type.upper()} Inverter (UL 1741 / IEEE 1547, 120/240V)", "Qty": 1, "Unit": "unit", "Unit Price ($)": inv_unit_price},
+]
+
+if battery_units > 0:
+    bom_rows.append({
+        "Component / Material": "Lithium Battery Bank (LiFePO4)",
+        "Specification": f"5kWh (48V 100Ah) Modular Battery ({battery_units * 5}kWh Total)",
+        "Qty": battery_units,
+        "Unit": "units",
+        "Unit Price ($)": DEFAULT_PRICES["battery_5kwh"]
+    })
+
+bom_rows.extend([
+    {"Component / Material": "Aluminum Mounting Rails", "Specification": f"4.2m Anodized Solar Rail (~{total_rail_m}m total)", "Qty": rail_bars, "Unit": "bars", "Unit Price ($)": DEFAULT_PRICES["rail_bar"]},
+    {"Component / Material": "Roof L-Feet / Tile Hooks", "Specification": "Stainless Steel Mounting Brackets + Lag Bolts", "Qty": roof_hooks, "Unit": "pcs", "Unit Price ($)": DEFAULT_PRICES["roof_hook"]},
+    {"Component / Material": "Mid Clamps", "Specification": "Aluminum Inter-panel Clamps (30-35mm)", "Qty": mid_clamps, "Unit": "pcs", "Unit Price ($)": DEFAULT_PRICES["mid_clamp"]},
+    {"Component / Material": "End Clamps", "Specification": "Aluminum Edge Clamps", "Qty": end_clamps, "Unit": "pcs", "Unit Price ($)": DEFAULT_PRICES["end_clamp"]},
